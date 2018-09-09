@@ -17,6 +17,7 @@ import ParseMonad
 import CodeSchtuff
 import ConfigSchtuff
 import EntrySchtuff
+import Types
 
 main = do
   args <- getArgs
@@ -25,7 +26,7 @@ main = do
   let (inFileName:configFileName:outFileName:_) = args
 
   -- Read config
-  (allEntries,timeSharingSlots) <- readConfig configFileName
+  (allEntries,timeSharingSlots,theEntryType) <- readConfig configFileName
 
   -- Prepare to write REL
   inFile <- openFile inFileName ReadMode
@@ -40,9 +41,14 @@ main = do
   hPutStrLn stderr "Copying up to the code that specifies the slots that share max times..."
   cpBytes [1..startOfTimeSharingSlotsCodeArea]
 
-  -- Write code for time sharing slots
-  hPutStrLn stderr "Writing code for the time sharing slots..."
-  writeTimeSharingSlotsCode inFile outFile timeSharingSlots
+  -- Write code for time sharing slots if we are using vanilla entries
+  if (theEntryType == Vanilla) 
+    then do
+      hPutStrLn stderr "Writing code for the time sharing slots..."
+      writeTimeSharingSlotsCode inFile outFile timeSharingSlots
+    else cpBytes [1..0x18]
+
+  
 
   -- Copy more bytes
   hPutStrLn stderr "Copying up to story entry area..."
@@ -50,7 +56,7 @@ main = do
 
   -- Write story entries
   hPutStrLn stderr "Writing story mode entries..."
-  writeAllEntries outFile allEntries
+  writeAllEntries outFile theEntryType allEntries
   hSeek inFile AbsoluteSeek endOfStoryArea
 
   -- Copy the rest of the bytes

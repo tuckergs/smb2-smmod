@@ -6,6 +6,8 @@ import qualified Data.ByteString.Builder as BB
 import Data.Word
 import System.IO
 
+import Types
+
 ------ IMPORTANT CONSTANTS ------
 
 startOfTimeSharingSlotsCodeArea = 0xa52dc
@@ -16,18 +18,6 @@ endOfTimeSharingSlotsCodeArea = 0xa52f4
 
 modCmp :: Word32 -> Word16 -> Word32
 modCmp inst imm = (inst .&. 0xFFFF0000) .|. (fromIntegral $ imm)
-
-
-data Op = LessThan | GreaterThan | LessThanEqual | GreaterThanEqual | Equal | NotEqual | AL
-
-opToBits :: Op -> Word32
-opToBits GreaterThanEqual = 0x00800000
-opToBits LessThanEqual = 0x00810000
-opToBits NotEqual  = 0x00820000
-opToBits LessThan  = 0x01800000
-opToBits GreaterThan  = 0x01810000
-opToBits Equal  = 0x01820000
-opToBits AL  = 0x02800000
 
 modBc :: Word32 -> Op -> Word32
 modBc inst op = (inst .&. 0xFC00FFFF) .|. (opToBits op)

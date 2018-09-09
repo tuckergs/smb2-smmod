@@ -33,6 +33,7 @@ simpleConfig.story.txt gives you vanilla Story Mode. If you run the program usin
 
 testConfig.story.txt changes 1-1 to Planets with ten difficulty, it makes the story-exclusive stages (save for World 10) have 45 seconds (i.e. ID <= 68), and makes all the other stages have 120 seconds. This is intended to show you how to specify the time sharing level slots along with the times
 
+simpleWithNewEntriesConfig.story.txt gives you the regular level order with the new story mode entry format. Look at the Melting Pot entry to see how to specify time for the entries. See smb2-relmod for more info about new story mode entries
 
 ## Credits
 

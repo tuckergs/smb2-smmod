@@ -20,9 +20,13 @@ import ParseMonad
 
 import CodeSchtuff
 import EntrySchtuff
+import Types
 
 
-comment = (ws <|> (ws >> token '%' >> list item)) >> return Nothing
+comment = ws <|> (ws >> token '%' >> list item)
+commentF = (>>) comment . return
+commentN = commentF CommentN
+commentE = commentF CommentE
 
 parseNum :: Read a => Parse String a
 parseNum = fmap read $ (list1 $ spot $ isDigit) <|> (tokens "0x" >> fmap ("0x"++) (list1 $ spot $ isHexDigit))
@@ -34,10 +38,10 @@ parseName = do
   return (c:cs)
 
 
-data NormalLine = TimeSharingSlots (Op,Word16,Word16,Word16) | BeginWorld Int
+data NormalLine = CommentN | TimeSharingSlotsLine (Op,Word16,Word16,Word16) | BeginWorldLine Int | EntryTypeLine EntryType
 
-parseNormalLine :: Parse String (Maybe NormalLine)
-parseNormalLine = comment <|> timeSharingSlotsLine <|> beginWorldLine
+parseNormalLine :: Parse String NormalLine
+parseNormalLine = commentN <|> timeSharingSlotsLine <|> beginWorldLine <|> entryTypeLine
   where
     timeSharingSlotsLine = do
       ws
@@ -67,33 +71,45 @@ parseNormalLine = comment <|> timeSharingSlotsLine <|> beginWorldLine
         tokens "else"
         ws1
         parseNum >>= ((comment >>) . return)
-      return $ Just $ TimeSharingSlots (op,cmpNum,time2,normalTime)
+      return $ TimeSharingSlotsLine (op,cmpNum,time2,normalTime)
     beginWorldLine = do
       ws
       tokens "#beginWorld"
       ws1
       wrldNum <- parseNum
       comment
-      return $ Just $ BeginWorld wrldNum
+      return $ BeginWorldLine wrldNum
+    entryTypeLine = do
+      ws
+      tokens "#entryType"
+      ws1
+      entryType <- (parseName >>=) $ \case
+        "Vanilla" -> return Vanilla
+        "New" -> return New
+        _ -> empty
+      return $ EntryTypeLine entryType
 
-parseEntryLine :: Parse String (Maybe (Maybe Entry))
-parseEntryLine = comment <|> entryLine <|> endWorldLine
+data EntryLine = CommentE | EndWorldLine | EntryLine Entry
+
+parseEntryLine :: Parse String EntryLine
+parseEntryLine = commentE <|> entryLine <|> endWorldLine
   where 
     endWorldLine = do
       ws
       tokens "#endWorld"
       comment
-      return $ Just Nothing
+      return $ EndWorldLine
     entryLine = do
       ws
       stgID <- parseNum
       ws1
       diff <- parseNum
+      time <- return 3600 <|> (ws1 >> parseNum)
       comment
-      return $ Just $ Just $ Entry stgID diff
+      return $ EntryLine $ Entry stgID diff time
   
 
-readConfig :: String -> IO (EntryList,(Op,Word16,Word16,Word16))
+readConfig :: String -> IO (EntryList,(Op,Word16,Word16,Word16),EntryType)
 readConfig cfgFileName = do
   cfgFile <- openFile cfgFileName ReadMode
   allLns <- fmap lines $ hGetContents cfgFile
@@ -106,10 +122,11 @@ data ConfigLoopRecord = CLR { getLineNum :: Int ,
                               getEntryLists :: [(Int,EntryList)] ,
                               getTmpEntryList :: EntryList ,
                               getWorldNumMaybe :: Maybe Int ,
-                              getTimeSharingSlotsMaybe :: Maybe (Op,Word16,Word16,Word16)
+                              getTimeSharingSlotsMaybe :: Maybe (Op,Word16,Word16,Word16) ,
+                              getEntryType :: EntryType
                             }
 
-parseConfig :: [String] -> IO (EntryList,(Op,Word16,Word16,Word16))
+parseConfig :: [String] -> IO (EntryList,(Op,Word16,Word16,Word16),EntryType)
 parseConfig allLns = 
   let
     initRecord = CLR { getLineNum = 1 ,
@@ -117,7 +134,8 @@ parseConfig allLns =
                         getEntryLists = [] ,
                         getTmpEntryList = [] ,
                         getWorldNumMaybe = Nothing ,
-                        getTimeSharingSlotsMaybe = Nothing
+                        getTimeSharingSlotsMaybe = Nothing ,
+                        getEntryType = Vanilla
                      }
   in 
     flip fix initRecord $ \loop curRecord -> do
@@ -127,6 +145,7 @@ parseConfig allLns =
           curTmpEntryList = getTmpEntryList curRecord
           curWorldNumMaybe = getWorldNumMaybe curRecord
           curTimeSharingSlotsMaybe = getTimeSharingSlotsMaybe curRecord
+          theEntryType = getEntryType curRecord
       case curLns of
         [] -> do
           when (length curEntryLists /= 10) $ 
@@ -137,7 +156,7 @@ parseConfig allLns =
               timeSharingSlots = case curTimeSharingSlotsMaybe of
                 Nothing -> (Equal,30,1800,3600)                -- By default, Melting Pot has 30 seconds while every other has 60 seconds
                 Just tss -> tss
-          return (allEntries,timeSharingSlots)
+          return (allEntries,timeSharingSlots,theEntryType)
         (ln:lns) -> do
           let nextRecord = curRecord { getLineNum = curLineNum + 1, getLines = lns }
               err = die $ "Error on line " ++ (show curLineNum)
@@ -146,10 +165,19 @@ parseConfig allLns =
             Nothing -> do -- We are parsing normal lines
               case parse parseNormalLine ln of
                 Left _ -> err                                             -- Error
-                Right Nothing -> loop nextRecord                          -- Comment
-                Right (Just (TimeSharingSlots tss)) ->                       -- Saw #timeSharingSlots
+                Right CommentN -> loop nextRecord                          -- Comment
+                Right (EntryTypeLine entryType) -> do
+                  let errMsg = "The entry type line, if there is one, must be the first non-whitespace/comment line in the program"
+                  case curTimeSharingSlotsMaybe of
+                    Just _ -> err2 errMsg
+                    Nothing -> if not $ null curEntryLists
+                      then err2 errMsg
+                      else loop $ nextRecord { getEntryType = entryType }
+                Right (TimeSharingSlotsLine tss) -> do                        -- Saw #timeSharingSlots
+                  when (theEntryType == New) $                            -- Can't specify for new sm entries
+                    err2 $ "You can\'t specify time sharing slots when using new sm entries.\nThe purpose for new entries is so you could specify time for your levels"
                   loop $ nextRecord { getTimeSharingSlotsMaybe = Just tss }
-                Right (Just (BeginWorld wrldNum)) -> do                   -- Saw #beginWorld
+                Right (BeginWorldLine wrldNum) -> do                   -- Saw #beginWorld
                   let curWorldNums = map fst curEntryLists
                   when (not $ (1 <= wrldNum) && (wrldNum <= 10)) $
                     err2 $ "Each world number must be between 1 and 10"
@@ -161,13 +189,16 @@ parseConfig allLns =
             Just wrldNum -> do -- We are parsing an entry list
               case parse parseEntryLine ln of
                 Left _ -> err                                                               -- Error
-                Right Nothing -> loop nextRecord                                            -- Comment
-                Right (Just (Just entry)) -> do                                             -- Saw an entry
+                Right CommentE -> loop nextRecord                                            -- Comment
+                Right (EntryLine entry) -> do                                             -- Saw an entry
                   let diff = getDifficulty entry
                   when (not $ (0 <= diff) && (diff <= 10)) $
                     err2 "Difficulty must be between 1 and 10"
+                  let time = getTime entry
+                  when ((time /= 3600) && (theEntryType == Vanilla)) $
+                    err2 $ "You can\'t specify time for vanilla entries.\nEither use time sharing slots or use new sm entries.\nSee smb2-relmod for more information on the new sm entries"
                   loop $ nextRecord { getTmpEntryList = entry:curTmpEntryList }
-                Right (Just Nothing) -> do                                                  -- Saw #endWorld
+                Right EndWorldLine -> do                                                  -- Saw #endWorld
                   when (length curTmpEntryList /= 10) $ 
                     err2 $ "Each world must have 10 entries"
                   let fixedEntries = reverse curTmpEntryList
